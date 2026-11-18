@@ -30,14 +30,19 @@ function Icon({ name, size = 18 }) {
 }
 
 async function request(path, { token, ...options } = {}) {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options?.headers,
-    },
-  })
+  let response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options?.headers,
+      },
+    })
+  } catch {
+    throw new Error('Unable to reach the backend. Start it with npm run dev in the backend folder, then try again.')
+  }
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
     const validationMessage = payload.errors?.map((error) => error.message).join(', ')

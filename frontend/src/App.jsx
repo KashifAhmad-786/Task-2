@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
 const emptyFarm = {
@@ -145,40 +145,72 @@ function FarmDialog({ farm, onClose, onSave, busy, error }) {
   )
 }
 
+const farmFilters = [
+  ['all', 'All farms'],
+  ['growing', 'Growing'],
+  ['planning', 'Planning'],
+  ['upcoming', 'Upcoming'],
+  ['harvested', 'Harvested'],
+]
+
+function FarmSearchInput({ value, onChange }) {
+  return <label className="search-box"><Icon name="search" size={17} /><input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Search farms, crops, locations" aria-label="Search farms" /></label>
+}
+
+function FarmFilterDropdown({ value, onChange }) {
+  return <label className="filter-select"><span className="visually-hidden">Filter farm records</span><select value={value} onChange={(event) => onChange(event.target.value)} aria-label="Filter farm records">{farmFilters.map(([option, label]) => <option key={option} value={option}>{label}</option>)}</select></label>
+}
+
 function Dashboard({ session, onLogout }) {
   const [farms, setFarms] = useState([])
+  const [filteredFarms, setFilteredFarms] = useState([])
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState('')
   const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('All farms')
+  const [filter, setFilter] = useState('all')
   const [dialogFarm, setDialogFarm] = useState(null)
   const [dialogError, setDialogError] = useState('')
   const [saving, setSaving] = useState(false)
   const [menuFarm, setMenuFarm] = useState('')
+  const filterRequestId = useRef(0)
 
   async function loadFarms() {
     setPageError('')
-    setLoading(true)
     try {
       const result = await request('/farms', { token: session.token })
       setFarms(result.farms)
     } catch (error) {
       if (error.message.includes('token') || error.message.includes('Authentication')) onLogout()
       else setPageError(error.message)
+    }
+  }
+
+  async function loadFilteredFarms(searchTerm, filterTerm) {
+    const requestId = ++filterRequestId.current
+    const params = new URLSearchParams({ search: searchTerm, filter: filterTerm })
+    setPageError('')
+    setLoading(true)
+    try {
+      const result = await request(`/farms?${params}`, { token: session.token })
+      if (requestId === filterRequestId.current) setFilteredFarms(result.farms)
+    } catch (error) {
+      if (requestId === filterRequestId.current) {
+        if (error.message.includes('token') || error.message.includes('Authentication')) onLogout()
+        else setPageError(error.message)
+      }
     } finally {
-      setLoading(false)
+      if (requestId === filterRequestId.current) setLoading(false)
     }
   }
 
   useEffect(() => { loadFarms() }, [])
+  useEffect(() => {
+    const timeout = setTimeout(() => loadFilteredFarms(search, filter), 250)
+    return () => clearTimeout(timeout)
+  }, [search, filter])
 
   const totalAcres = farms.reduce((total, farm) => total + Number(farm.farmSize || 0), 0)
   const growingCount = farms.filter((farm) => getSeasonStage(farm) === 'Growing').length
-  const filteredFarms = useMemo(() => farms.filter((farm) => {
-    const matchesText = `${farm.farmName} ${farm.location} ${farm.cropType}`.toLowerCase().includes(search.toLowerCase())
-    return matchesText && (filter === 'All farms' || getSeasonStage(farm) === filter)
-  }), [farms, search, filter])
-
   async function saveFarm(payload) {
     setSaving(true)
     setDialogError('')
@@ -189,8 +221,8 @@ function Dashboard({ session, onLogout }) {
         method: editing ? 'PUT' : 'POST',
         body: JSON.stringify(payload),
       })
-      setFarms((current) => editing ? current.map((farm) => farm._id === result.farm._id ? result.farm : farm) : [result.farm, ...current])
       setDialogFarm(null)
+      await Promise.all([loadFarms(), loadFilteredFarms(search, filter)])
     } catch (error) {
       setDialogError(error.message)
     } finally {
@@ -203,7 +235,7 @@ function Dashboard({ session, onLogout }) {
     setMenuFarm('')
     try {
       await request(`/farms/${farm._id}`, { token: session.token, method: 'DELETE' })
-      setFarms((current) => current.filter((item) => item._id !== farm._id))
+      await Promise.all([loadFarms(), loadFilteredFarms(search, filter)])
     } catch (error) {
       setPageError(error.message)
     }
@@ -226,7 +258,7 @@ function Dashboard({ session, onLogout }) {
         <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> Overview</div><div className="topbar-right"><span className="today-label">{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(new Date())}</span><span className="avatar top-avatar">{initials}</span></div></header>
         <div className="content-wrap">
           <section className="welcome-row"><div><span className="eyebrow">YOUR FARM DESK</span><h1>Good morning, {session.user.name.split(' ')[0]}<span className="period">.</span></h1><p className="muted">A clear view of what’s growing and what’s next.</p></div><button className="button button-primary" onClick={openCreate}><Icon name="plus" size={17} /> Add a farm</button></section>
-          {pageError && <div className="notice" role="alert"><span>{pageError}</span><button onClick={loadFarms}>Try again</button></div>}
+          {pageError && <div className="notice" role="alert"><span>{pageError}</span><button onClick={() => { loadFarms(); loadFilteredFarms(search, filter) }}>Try again</button></div>}
           <section className="metrics" aria-label="Farm summary">
             <article className="metric"><div className="metric-head"><span>REGISTERED FARMS</span><span className="metric-icon olive"><Icon name="leaf" size={17} /></span></div><strong>{loading ? '—' : farms.length.toString().padStart(2, '0')}</strong><small>Your growing spaces</small></article>
             <article className="metric"><div className="metric-head"><span>LAND IN CARE</span><span className="metric-icon gold">A</span></div><strong>{loading ? '—' : `${Number(totalAcres.toFixed(1)).toLocaleString()} `}<em>{loading ? '' : 'acres'}</em></strong><small>Total registered area</small></article>
@@ -237,7 +269,7 @@ function Dashboard({ session, onLogout }) {
           <section className="season-banner"><div className="banner-copy"><span className="eyebrow">THE SEASON, AT A GLANCE</span><h2>Every field has a story.</h2><p>{farms.length ? `${farms.length} ${farms.length === 1 ? 'farm is' : 'farms are'} in your records. Keep planting dates and harvest plans close as the season unfolds.` : 'Add your first farm to bring planting dates, harvest plans, and the season ahead into focus.'}</p><a href="#farms" className="text-link">View farm records <Icon name="arrow" size={16} /></a></div><div className="banner-image" role="img" aria-label="Rows of crops in a green field"><span>FIELD NOTES&nbsp; / &nbsp;01</span></div></section>
 
           <section className="farm-section" id="farms"><div className="section-heading"><div><span className="eyebrow">YOUR LAND</span><h2>Farm records <span className="count-badge">{farms.length}</span></h2></div><button className="button button-outline" onClick={openCreate}><Icon name="plus" size={16} /> New farm</button></div>
-            <div className="farm-toolbar"><label className="search-box"><Icon name="search" size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search farms, crops, locations" aria-label="Search farms" /></label><div className="filter-tabs" aria-label="Filter farms">{['All farms', 'Growing', 'Planning', 'Upcoming', 'Harvested'].map((option) => <button key={option} className={filter === option ? 'active' : ''} onClick={() => setFilter(option)}>{option}</button>)}</div></div>
+            <div className="farm-toolbar"><FarmSearchInput value={search} onChange={setSearch} /><FarmFilterDropdown value={filter} onChange={setFilter} /></div>
             <div className="farm-table-wrap"><table className="farm-table"><thead><tr><th>FARM</th><th>PRIMARY CROP</th><th>AREA</th><th>SEASON</th><th>PLANTING</th><th></th></tr></thead><tbody>
               {loading ? <tr><td className="table-message" colSpan="6">Loading your farm records...</td></tr> : filteredFarms.length ? filteredFarms.map((farm, index) => {
                 const stage = getSeasonStage(farm)

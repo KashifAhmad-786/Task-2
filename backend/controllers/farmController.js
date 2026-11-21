@@ -6,6 +6,39 @@ const createFarmNotFoundError = () => {
   return error;
 };
 
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getStageQuery = (stage, now) => {
+  const hasBothDates = {
+    plantingDate: { $exists: true, $ne: null },
+    harvestDate: { $exists: true, $ne: null },
+  };
+
+  switch (stage) {
+    case 'planning':
+      return {
+        $or: [
+          { plantingDate: { $exists: false } },
+          { plantingDate: null },
+          { harvestDate: { $exists: false } },
+          { harvestDate: null },
+        ],
+      };
+    case 'upcoming':
+      return { ...hasBothDates, plantingDate: { $gt: now } };
+    case 'growing':
+      return {
+        ...hasBothDates,
+        plantingDate: { $lte: now },
+        harvestDate: { $gte: now },
+      };
+    case 'harvested':
+      return { ...hasBothDates, harvestDate: { $lt: now } };
+    default:
+      return null;
+  }
+};
+
 export const createFarm = async (req, res, next) => {
   try {
     const { owner, ...farmData } = req.body;
@@ -27,7 +60,31 @@ export const createFarm = async (req, res, next) => {
 
 export const getFarms = async (req, res, next) => {
   try {
-    const farms = await Farm.find({ owner: req.user.id }).sort({ createdAt: -1 });
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : '';
+    const stage = typeof req.query.filter === 'string' ? req.query.filter.toLowerCase() : 'all';
+    const supportedStages = ['all', 'growing', 'planning', 'upcoming', 'harvested'];
+
+    if (!supportedStages.includes(stage)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Filter must be all, growing, planning, upcoming, or harvested',
+      });
+    }
+
+    const query = { owner: req.user.id };
+    if (search) {
+      const searchRegex = new RegExp(escapeRegex(search), 'i');
+      query.$or = [
+        { farmName: searchRegex },
+        { location: searchRegex },
+        { cropType: searchRegex },
+      ];
+    }
+
+    const stageQuery = getStageQuery(stage, new Date());
+    if (stageQuery) query.$and = [stageQuery];
+
+    const farms = await Farm.find(query).sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
